@@ -28,10 +28,13 @@ func main() {
 
 	for {
 		fmt.Println("send -----> ")
-		sendString := "hello kcp!!"
-		sendData := NetManager.Enpack(NetManager.Cmd_Checkin, []byte(sendString))
-		//sendData = []byte("hello kcp!!")
-		ret, err2 := (conn).Write(sendData)
+		sendString1 := "HELLO_1"
+		sendData1 := NetManager.Enpack(NetManager.Cmd_Checkin, []byte(sendString1))
+		sendString2 := "HELLO_2"
+		sendData2 := NetManager.Enpack(NetManager.Cmd_Checkin, []byte(sendString2))
+		sendFull := append(sendData1, sendData2...)//测试如果有多个包同时发送了。
+
+		ret, err2 := (conn).Write(sendFull)
 		if err2 != nil {
 			fmt.Println("err2:", err2)
 			return

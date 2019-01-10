@@ -20,7 +20,7 @@ func main() {
 func netHandler (session *NetManager.Session, cmd NetManager.CmdType, data string) (error, string) {
 	//log.Println("CMD:", cmd)
 	if cmd == NetManager.Cmd_Checkin {
-		return nil, "checkin"
+		return nil, "checkin:"+data
 	}else {
 		return nil, ""
 	}

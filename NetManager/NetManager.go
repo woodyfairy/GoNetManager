@@ -41,11 +41,10 @@ func Listen(laddr string){
 func handleConn(session *Session) {
 	defer session.Close()
 
-	tempBuff := make([]byte, 0)
-	readBuff := make([]byte, 256)
-	data := make([]byte, 0)
-	cmd := Cmd_None
-
+	tempBuff := make([]byte, 0) //总buff
+	cmd := cmd_None //cmd
+	data := make([]byte, 0) //msg，可能=0
+	readBuff := make([]byte, 256) //临时读取buff
 	for {
 		n, err := session.connection.Read(readBuff)
 		if err != nil {
@@ -62,31 +61,34 @@ func handleConn(session *Session) {
 		}
 		tempBuff = append(tempBuff, readBuff[:n]...)
 
-		errDepack := Depack(&tempBuff, &cmd, &data)
-		if errDepack != nil {
-			if showNetLog {
-				log.Println("Depack ERROR:", errDepack)
+		//若buff中存在多个完整命令包，则都需要取出来执行，否则会阻塞后面的命令包
+		for len(tempBuff) > 0 {
+			errDepack, finish := Depack(&tempBuff, &cmd, &data)
+			if errDepack != nil {
+				if showNetLog {
+					log.Println("Depack ERROR:", errDepack)
+				}
+				return
 			}
-			return
+
+			if finish == false{
+				break // 说明只有半包，break，等待read
+			}
+
+			doData(session, cmd, data) //是否需要go?
+
+			cmd = cmd_None
+			data = data[0:0]//清空
 		}
-
-		if cmd == Cmd_None {
-			continue
-		}
-
-		go doData(session, cmd, &data)
-
-		cmd = Cmd_None
-		data = data[0:0]//清空
 	}
 }
 
 type msgHandler func (session *Session, cmd CmdType, data string) (error, string)
 var NetMsgHandler msgHandler = nil
-func doData(session *Session, cmd CmdType, data *[]byte) {
+func doData(session *Session, cmd CmdType, data []byte) {//如果goroutine时，data变量已经清空，不能用指针
 	if showNetLog {
 		log.Print("Data : ")
-		log.Println(string((*data)[:]))
+		log.Println(string(data[:]))
 	}
 	//刷新时间
 	session.updateTime()
@@ -97,7 +99,7 @@ func doData(session *Session, cmd CmdType, data *[]byte) {
 		return
 	}
 	//处理数据
-	dataString := string(*data)
+	dataString := string(data[:])
 	if NetMsgHandler != nil {
 		err, msg :=  NetMsgHandler(session, cmd, dataString)
 		if err != nil {
@@ -128,32 +130,32 @@ func Enpack(cmd CmdType, message []byte) []byte {
 
 	return append(append(append([]byte(netHeader), Uint16ToBytes(uint16(cmd))...), Uint16ToBytes(uint16(msgL))...), message...)
 }
-func Depack(buff *[]byte, cmd *CmdType, data *[]byte) error {
+func Depack(buff *[]byte, cmd *CmdType, data *[]byte) (error, bool) {
 	l := len(*buff)
 	if l > maxUint16 {
-		return errors.New("NET ERROR: MSG TOO LONG")
+		return errors.New("NET ERROR: MSG TOO LONG"), false
 	}
 
 	length := uint16(l)
 	if length <  headerLength + headerCmdSize + headerMsgLengthSize{
-		return nil
+		return nil, false
 	}
 
 	//如果header不是 指定的header 说明此数据已经被污染 直接返回错误
 	if string((*buff)[:headerLength]) != netHeader {
-		return errors.New("NET ERROR: WRONG HEADER")
+		return errors.New("NET ERROR: WRONG HEADER"), false
 	}
 
 	msgLength := BytesToUint16((*buff)[headerLength + headerCmdSize : headerLength + headerCmdSize + headerMsgLengthSize])
 	if length < headerLength + headerCmdSize + headerMsgLengthSize + msgLength {
-		return nil
+		return nil, false
 	}
 
 	*cmd = CmdType(BytesToUint16((*buff)[headerLength : headerLength + headerCmdSize]))
 	*data = (*buff)[headerLength + headerCmdSize + headerMsgLengthSize : headerLength + headerCmdSize + headerMsgLengthSize + msgLength]
 	*buff = (*buff)[headerLength + headerCmdSize + headerMsgLengthSize + msgLength:]
 
-	return nil
+	return nil, true
 }
 
 //将int转成四个字节
