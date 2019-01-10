@@ -3,13 +3,15 @@ package NetManager
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"github.com/pkg/errors"
 	"github.com/xtaci/kcp-go"
 	"log"
-	"net"
 )
 
-var showlog = true
+const showNetLog = false
+
+var sid uint32 = 0
 
 func Listen(laddr string){
 	//config if need
@@ -26,95 +28,136 @@ func Listen(laddr string){
 			//return
 			continue
 		}
-		go handleConn(conn)
+
+		//创建session
+		session := NewSession(sid, conn)
+		SharedSessionManager.SetSession(sid, session)
+		sid++
+
+		go handleConn(session)
 	}
 }
 
-
-func handleConn(conn net.Conn) {
-	defer closeCoon(conn)
+func handleConn(session *Session) {
+	defer session.Close()
 
 	tempBuff := make([]byte, 0)
 	readBuff := make([]byte, 256)
 	data := make([]byte, 0)
+	cmd := Cmd_None
 
 	for {
-		n, err := conn.Read(readBuff)
+		n, err := session.connection.Read(readBuff)
 		if err != nil {
-			log.Println("Read ERROR:", err.Error())
+			if showNetLog {
+				//主动close时也会返回错误
+				log.Println("Read ERROR:", err.Error())
+			}
+			return
 		}
 
-		if showlog {
+		if showNetLog {
 			log.Println("recv -----> ")
 			log.Println("length:", n)
 		}
 		tempBuff = append(tempBuff, readBuff[:n]...)
 
-		errDepack := Depack(&tempBuff, &data)
+		errDepack := Depack(&tempBuff, &cmd, &data)
 		if errDepack != nil {
-			if showlog {
+			if showNetLog {
 				log.Println("Depack ERROR:", errDepack)
 			}
 			return
 		}
 
-		if len(data) == 0 {
+		if cmd == Cmd_None {
 			continue
 		}
 
-		_ = doData(&data)
+		go doData(session, cmd, &data)
+
+		cmd = Cmd_None
 		data = data[0:0]//清空
 	}
 }
 
-func doData(data *[]byte) error {
-	if showlog {
-		log.Print("datas : ")
+type msgHandler func (session *Session, cmd CmdType, data string) (error, string)
+var NetMsgHandler msgHandler = nil
+func doData(session *Session, cmd CmdType, data *[]byte) {
+	if showNetLog {
+		log.Print("Data : ")
 		log.Println(string((*data)[:]))
 	}
-	//conn.Write(datas.Bytes())
-
-	return nil
+	//刷新时间
+	session.updateTime()
+	//心跳直接返回
+	if cmd == Cmd_Heartbeat {
+		//log.Println("Heartbeat")
+		_= session.Send(cmd, "")
+		return
+	}
+	//处理数据
+	dataString := string(*data)
+	if NetMsgHandler != nil {
+		err, msg :=  NetMsgHandler(session, cmd, dataString)
+		if err != nil {
+			log.Println("NetMsgHandler ERROR:", err)
+			errMsg := fmt.Sprintf("{\"err\" : \"%s\"}",err.Error())
+			_= session.Send(cmd, errMsg)
+		}else if len(msg) > 0{
+			_= session.Send(cmd, msg)
+		}
+	}
 }
 
-func closeCoon(conn net.Conn)  {
-	log.Println("CLOSE")
-	conn.Close()
-}
-
-//粘包：包头格式 NETHEADER+2字节uint表示内容长度
+//粘包：包头格式 NETHEADER+2字节uint16表示内容长度
 const (
-	NETHEADER       	= "~HEADER~"
-	NETHEADER_LEN		= 8 //NETHEADER长度
-	NETHEADER_LENSIZE	= 2 //uint16
+	netHeader       	= "~HEADER~"
+	headerLength		= 8 //NETHEADER长度
+	headerCmdSize		= 2 //CmdType占2字节 //CMD编号，0-65535
+	headerMsgLengthSize	= 2 //uint16 //内容最大长度65535个字节
+
+	maxUint16 int = 0xFFFF
 )
-func Enpack(message []byte) []byte {
-	return append(append([]byte(NETHEADER), Uint16ToBytes(len(message))...), message...)
+
+func Enpack(cmd CmdType, message []byte) []byte {
+	msgL := len(message)
+	if msgL > maxUint16 {
+		return nil
+	}
+
+	return append(append(append([]byte(netHeader), Uint16ToBytes(uint16(cmd))...), Uint16ToBytes(uint16(msgL))...), message...)
 }
-func Depack(buff *[]byte, data *[]byte) error {
-	length := uint16(len(*buff))
-	if length <  NETHEADER_LEN + NETHEADER_LENSIZE{
+func Depack(buff *[]byte, cmd *CmdType, data *[]byte) error {
+	l := len(*buff)
+	if l > maxUint16 {
+		return errors.New("NET ERROR: MSG TOO LONG")
+	}
+
+	length := uint16(l)
+	if length <  headerLength + headerCmdSize + headerMsgLengthSize{
 		return nil
 	}
 
 	//如果header不是 指定的header 说明此数据已经被污染 直接返回错误
-	if string((*buff)[:NETHEADER_LEN]) != NETHEADER {
+	if string((*buff)[:headerLength]) != netHeader {
 		return errors.New("NET ERROR: WRONG HEADER")
 	}
 
-	msgLength := BytesToUint16((*buff)[NETHEADER_LEN : NETHEADER_LEN + NETHEADER_LENSIZE])
-	if length < NETHEADER_LEN+NETHEADER_LENSIZE+msgLength {
+	msgLength := BytesToUint16((*buff)[headerLength + headerCmdSize : headerLength + headerCmdSize + headerMsgLengthSize])
+	if length < headerLength + headerCmdSize + headerMsgLengthSize + msgLength {
 		return nil
 	}
 
-	*data = (*buff)[NETHEADER_LEN + NETHEADER_LENSIZE : NETHEADER_LEN + NETHEADER_LENSIZE+msgLength]
-	*buff = (*buff)[NETHEADER_LEN + NETHEADER_LENSIZE + msgLength:]
+	*cmd = CmdType(BytesToUint16((*buff)[headerLength : headerLength + headerCmdSize]))
+	*data = (*buff)[headerLength + headerCmdSize + headerMsgLengthSize : headerLength + headerCmdSize + headerMsgLengthSize + msgLength]
+	*buff = (*buff)[headerLength + headerCmdSize + headerMsgLengthSize + msgLength:]
 
 	return nil
 }
 
 //将int转成四个字节
-func Uint16ToBytes(n int) []byte {
+func Uint16ToBytes(n uint16) []byte {
 	x := uint16(n)
 	bytesBuffer := bytes.NewBuffer([]byte{})
 	err := binary.Write(bytesBuffer, binary.BigEndian, x)

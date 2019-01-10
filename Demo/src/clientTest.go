@@ -4,12 +4,19 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/xtaci/kcp-go"
+	"log"
 	"net"
 	"time"
 	"../../NetManager"
 )
+const (
+	HeartBeatTime	= 5
+)
+
+//var conn net.Conn
 
 func main() {
+	//var err error
 	conn, err := kcp.Dial("127.0.0.1:3000")
 	if err != nil {
 		fmt.Println("err:", err)
@@ -17,18 +24,21 @@ func main() {
 	}
 	go handleConnC(conn)
 
+	go checkTimeOut(&conn)
+
 	for {
-		fmt.Println("send ------> ")
-		sendData := NetManager.Enpack([]byte("hello kcp!!"))
+		fmt.Println("send -----> ")
+		sendString := "hello kcp!!"
+		sendData := NetManager.Enpack(NetManager.Cmd_Checkin, []byte(sendString))
 		//sendData = []byte("hello kcp!!")
-		ret, err2 := conn.Write(sendData)
+		ret, err2 := (conn).Write(sendData)
 		if err2 != nil {
 			fmt.Println("err2:", err2)
 			return
 		} else {
-			fmt.Println("send ret length:", ret)
+			fmt.Println(sendString, "\nlength:", ret)
 		}
-		time.Sleep(time.Duration(5)*time.Second)
+		time.Sleep(time.Duration(20)*time.Second)
 	}
 }
 
@@ -46,8 +56,33 @@ func handleConnC(conn net.Conn) {
 			return
 		}
 
-		fmt.Print("datas : ")
-		fmt.Println(datas.Bytes(), ":", string(datas.Bytes()))
+		//fmt.Print("datas : ")
+		fmt.Println(string(datas.Bytes()))
 
+	}
+}
+
+var close = make(chan int)
+var sendOrRcv = make(chan int)
+
+func checkTimeOut(conn *net.Conn)  {
+	for {
+		select {
+			case <-close:
+				return
+			case <-sendOrRcv:
+
+			case <-time.After(HeartBeatTime * time.Second):
+				log.Println("heartbeat ---->")
+				sendString := ""
+				sendData := NetManager.Enpack(NetManager.Cmd_Heartbeat, []byte(sendString))
+				//log.Println("data:", sendData)
+				//sendData = []byte("hello kcp!!")
+				_, err := (*conn).Write(sendData)
+				if err != nil {
+					fmt.Println("err2:", err)
+					return
+				}
+		}
 	}
 }
