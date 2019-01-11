@@ -42,9 +42,9 @@ func handleConn(session *Session) {
 	defer session.Close()
 
 	tempBuff := make([]byte, 0) //总buff
-	cmd := cmd_None //cmd
+	cmd := Cmd_None //cmd
 	data := make([]byte, 0) //msg，可能=0
-	readBuff := make([]byte, 256) //临时读取buff
+	readBuff := make([]byte, 128) //临时读取buff
 	for {
 		n, err := session.connection.Read(readBuff)
 		if err != nil {
@@ -65,9 +65,8 @@ func handleConn(session *Session) {
 		for len(tempBuff) > 0 {
 			errDepack, finish := Depack(&tempBuff, &cmd, &data)
 			if errDepack != nil {
-				if showNetLog {
-					log.Println("Depack ERROR:", errDepack)
-				}
+				log.Println("Depack ERROR:", errDepack)
+				doData(session, Cmd_NetError, []byte(errDepack.Error()))
 				return
 			}
 
@@ -77,7 +76,7 @@ func handleConn(session *Session) {
 
 			doData(session, cmd, data) //是否需要go?
 
-			cmd = cmd_None
+			cmd = Cmd_None
 			data = data[0:0]//清空
 		}
 	}
@@ -87,8 +86,8 @@ type msgHandler func (session *Session, cmd CmdType, data string) (error, string
 var NetMsgHandler msgHandler = nil
 func doData(session *Session, cmd CmdType, data []byte) {//如果goroutine时，data变量已经清空，不能用指针
 	if showNetLog {
-		log.Print("Data : ")
-		log.Println(string(data[:]))
+		log.Print("CMD : ", cmd)
+		log.Print("Data : ", string(data[:]))
 	}
 	//刷新时间
 	session.updateTime()
